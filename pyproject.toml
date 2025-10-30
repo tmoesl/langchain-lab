@@ -1,0 +1,7 @@
+[project]
+name = "langchain-lab"
+version = "0.1.0"
+description = "LangChain Lab"
+readme = "README.md"
+requires-python = ">=3.12.8"
+dependencies = []
