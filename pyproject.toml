@@ -4,4 +4,50 @@ version = "0.1.0"
 description = "LangChain Lab"
 readme = "README.md"
 requires-python = ">=3.12.8"
-dependencies = []
+dependencies = [
+    "langchain>=1.0.3",
+    "langchain-anthropic>=1.0.0",
+    "langchain-community>=0.4.1",
+    "langchain-google-genai>=3.0.0",
+    "langchain-mcp-adapters>=0.1.12",
+    "langchain-openai>=1.0.1",
+    "langgraph>=0.2.0",
+    "langgraph-cli[inmem]>=0.4.7",
+    "langmem>=0.0.30",
+    "python-dotenv>=1.2.1",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
+]
+
+[tool.ruff]
+exclude = [
+  ".git",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".ipynb_checkpoints",
+  "build",
+  "_build",
+  ".vscode"
+]
+line-length = 100
+target-version = "py312"
+indent-width = 4
+
+[tool.ruff.lint]
+select = [
+  "E", "F", "I", "B", "UP", "SIM", "C4", "TID", "ERA", "PL"
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+skip-magic-trailing-comma = false
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
