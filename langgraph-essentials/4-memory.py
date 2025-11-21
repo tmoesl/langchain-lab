@@ -1,124 +1,172 @@
 """
-Memory and Persistence
+LangGraph - Memory and Persistence with Checkpointers
 
 Demonstrates how to add memory to LangGraph using checkpointers for state persistence.
-State is preserved across graph runs using thread IDs for conversation continuity.
+This enables multi-turn conversations where the graph remembers context across invocations.
 
 Key Concepts:
-- Super Steps: Multiple nodes can execute in parallel within a single step
+-------------
 - Checkpointers: Store state snapshots at the end of each super step
 - Thread ID: Identifies conversation threads for state persistence
-- State Accumulation: Messages accumulate across invocations using add_messages reducer
+- InMemorySaver: Simple in-memory storage (for development/testing)
+- add_messages: Built-in reducer that intelligently merges message lists
 
 Benefits of Checkpointing:
-- Graceful recovery from failures
-- Time travel: restore state from previous points
-- Persistent state: preserved when graph isn't running
-- Resume execution: pick up exactly where left off
+--------------------------
+- Graceful Recovery: Restore state and restart after node failures
+- Time Travel: Restore state from any previous checkpoint
+- Persistent State: State preserved even when graph isn't running
+- Resume Execution: Pick up exactly where execution left off
 
-Checkpointer Options:
-- InMemorySaver: Simple in-memory storage (development)
-- PostgresSaver: Production database storage
+Production Checkpointers:
+-------------------------
+- InMemorySaver: Development/testing (used in this example)
+- PostgresSaver: Production-grade database storage
 - SQLiteSaver: File-based database storage
+
+Execution Flow:
+---------------
+1. Graph is compiled with a checkpointer
+2. Each invocation uses a thread_id in the config
+3. State is automatically saved at the end of each super step
+4. Subsequent invocations with the same thread_id restore previous state
+5. Messages accumulate across multiple invocations
+
+References:
+https://docs.langchain.com/oss/python/langgraph/add-memory
+https://docs.langchain.com/oss/python/langgraph/persistence
 """
 
-import operator
-import sys
 from typing import Annotated, TypedDict
 
 from dotenv import load_dotenv
 from IPython.display import Image, display
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
 
 load_dotenv()
 
-from typing import Literal
 
 # ==============================================================
-# Approach 1: Conditional Edges with Separate Router
+# Define State
+# ==============================================================
+# Note: This can be replaced with MessagesState directly.
+
+
+class State(TypedDict):
+    """State with accumulating list of messages."""
+
+    messages: Annotated[list[BaseMessage], add_messages]
+
+
+# ==============================================================
+# Initialize Model and System Message
+# ==============================================================
+
+model = init_chat_model("openai:gpt-5-mini")
+
+# System message to guide the chatbot's behavior
+
+
+# ==============================================================
+# Define Nodes
 # ==============================================================
 
 
-class AgentState(TypedDict):
-    """State with accumulating list of visited nodes."""
+def agent_node(state: State) -> dict:
+    """
+    Calls the LLM with full conversation history and returns the AI response.
+    The checkpointer automatically saves the updated state after this node completes.
+    """
 
-    nlist: Annotated[list[str], operator.add]
+    print("--- Agent Node ---")
+    print(f"  - Processing {len(state['messages'])} message(s) in conversation history")
 
+    system_msg = SystemMessage(
+        content="You are a helpful assistant. Be concise and friendly in your responses."
+    )
+    messages = [system_msg] + state["messages"]
+    response = model.invoke(messages)  # Invoke the model with full conversation history
 
-def node_a_basic(state: AgentState) -> None:
-    """Entry node - no state updates."""
-    print("🚀 Starting at node a")
-
-
-def node_b_basic(state: AgentState) -> AgentState:
-    """Process B path."""
-    print("📍 Executing node b")
-    return AgentState(nlist=["b"])
-
-
-def node_c_basic(state: AgentState) -> AgentState:
-    """Process C path."""
-    print("📍 Executing node c")
-    return AgentState(nlist=["c"])
+    return {"messages": [response]}
 
 
-def route_decision(state: AgentState) -> Literal["b", "c", END]:
-    """Route based on last input in state."""
-    last_input = state["nlist"][-1].lower()
-
-    route_map = {"b": "b", "c": "c", "q": END}
-    next_node = route_map.get(last_input, END)
-    print(f"🎯 Routing to node {next_node}")
-    return next_node
+# ==============================================================
+# Build Graph
+# ==============================================================
+# Add checkpointer to the graph
+# State is saved after each super step, enabling recovery and memory
 
 
-def create_conditional_edge_graph():
-    """Create graph using add_conditional_edges approach."""
+# Initiate the graph
+graph = StateGraph(State)
 
-    builder = StateGraph(AgentState)
-
-    # Add nodes
-    builder.add_node("a", node_a_basic)
-    builder.add_node("b", node_b_basic)
-    builder.add_node("c", node_c_basic)
-
-    # Add edges
-    builder.add_edge(START, "a")
-    builder.add_conditional_edges("a", route_decision)
-    builder.add_edge("b", END)
-    builder.add_edge("c", END)
-
-    memory = InMemorySaver()
-
-    return builder.compile(checkpointer=memory)
+# Add nodes and edges
+graph.add_node("agent", agent_node)
+graph.add_edge(START, "agent")
+graph.add_edge("agent", END)
 
 
-def test_conditional_edges():
-    """Test the conditional edges approach."""
-
-    print(f"\n{'=' * 50}")
-    print("Testing: Conditional Edges Approach")
-    print(f"{'=' * 50}")
-
-    graph = create_conditional_edge_graph()
-    config = {"configurable": {"thread_id": "1"}}
-
-    # Visualize the graph
-    if hasattr(sys, "ps1"):
-        display(Image(graph.get_graph().draw_mermaid_png()))
-
-    # Test cases
-
-    while True:
-        user = input("Enter: b, c, q or exit to quit: ")
-        if user == "exit":
-            break
-
-        initial_state = AgentState(nlist=[user])
-        response = graph.invoke(initial_state, config=config)
-        print(f"Result: {response['nlist']}\n")
+# Compile graph
+memory = InMemorySaver()
+graph = graph.compile(checkpointer=memory)
 
 
-if __name__ == "__main__":
-    test_conditional_edges()
+# ==============================================================
+# Helper Function for Running Conversations
+# ==============================================================
+
+
+def run_turn(thread_name: str, turn_number: int, user_msg: str, config: RunnableConfig) -> None:
+    """
+    Helper function to run a single conversation turn and display results.
+
+    Args:
+        thread_name: Display name for the thread (e.g., "Thread 1")
+        turn_number: The turn number in this conversation
+        user_msg: The user's message
+        config: RunnableConfig with thread_id for state persistence
+    """
+    print(f"\n[{thread_name} - Turn {turn_number}]")
+    result = graph.invoke({"messages": [HumanMessage(content=user_msg)]}, config)  # type: ignore
+    print(f"\nUser: {user_msg}")
+    print(f"Assistant: {result['messages'][-1].content}")
+    print(f"Total messages in thread: {len(result['messages'])}")
+
+
+# ==============================================================
+# Run Graph - Demonstrating Memory Across Invocations
+# ==============================================================
+# Key Takeaway: Each thread_id maintains independent conversation history!
+
+print("=" * 70)
+print("Demonstrating Memory: Multi-Turn Conversations with Thread IDs")
+print("=" * 70)
+
+# Configuration for thread 1
+config_1: RunnableConfig = {"configurable": {"thread_id": "conversation-1"}}
+
+run_turn("Thread 1", 1, "Hi! My name is Alice. I'm 25 years old.", config_1)
+run_turn("Thread 1", 2, "What's my name?", config_1)  # Alice
+run_turn("Thread 1", 3, "What is my age?", config_1)  # 25 years
+
+# Start a new conversation (new thread)
+config_2: RunnableConfig = {"configurable": {"thread_id": "conversation-2"}}
+run_turn("Thread 2", 1, "Hi! My name is Bob.", config_2)
+run_turn("Thread 2", 2, "What's my name?", config_2)  # Bob
+
+# Return to thread 1 (memory persists)
+run_turn("Thread 1", 4, "What's my name again?", config_1)  # Alice
+
+# ==============================================================
+# Visualize Graph
+# ==============================================================
+print("\n" + "=" * 60)
+print("Graph Visualization:")
+print("=" * 60)
+
+display(Image(graph.get_graph().draw_mermaid_png()))

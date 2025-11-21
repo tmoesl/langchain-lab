@@ -1,52 +1,105 @@
 """
-Nodes and State
+LangGraph Nodes and State: The Building Blocks of Graph-Based Workflows
 
 LangGraph functions like a programming language for building AI workflows, where data (“state”)
 flows through a network of functional units (“nodes”) connected by control paths (“edges”).
 
-Key points about nodes and state:
-- State: shared data passed and updated across nodes, usually a Python structure.
-- Nodes: functions that take state as input and return updates to it.
-- Edges: control execution flow between nodes (static or conditional) and (serial, parallel).
-- Checkpointing: persists state for recovery and resilience after failures.
-- Graphs: are stateless; all the data lives in the shared state object passed between nodes.
-- Human in the Loop: Pause the graph execution and wait for human input.
+Key Concepts:
+-------------
+- State: A shared data structure (e.g., TypedDict) that is passed between nodes and updated by them.
+- Nodes: Functions that take the current state as input and return updates to be merged back into the state.
+- Edges: Define the control flow, determining which node to execute next.
+- Graphs: Are stateless; all application data is managed in the state.
+- Checkpointing: Persists state for resilience, allowing the graph to recover from failures and be paused.
+- Human-in-the-Loop: Allows for pausing the graph to wait for human input before continuing.
 
-Execution:
-- Runtime: On `invoke`, LangGraph initializes state and selects nodes to run.
-- State Flow: Each node processes the current state and returns updates.
-- Graph Return: After all nodes complete, the graph outputs the final state.
+Execution Flow:
+---------------
+1. Initialize Graph: A StateGraph is instantiated with a state definition.
+2. Add Nodes: Nodes (functions) are added to the graph with unique identifiers.
+3. Define Edges: Edges connect nodes to define the sequence of operations. START and END are special nodes.
+4. Compile: The graph definition is compiled into a runnable object.
+5. Invoke: The graph is run by passing in an initial state. The runtime executes nodes, updates the state, and returns the final state.
+
+References:
+https://docs.langchain.com/oss/python/langgraph/graph-api
+https://docs.langchain.com/oss/python/langgraph/graph-api#state
+https://docs.langchain.com/oss/python/langgraph/graph-api#nodes
+https://docs.langchain.com/oss/python/langgraph/graph-api#edges
 """
 
-from typing import Annotated, TypedDict
+from typing import TypedDict
 
+from dotenv import load_dotenv
 from IPython.display import Image, display
-from langchain_core.messages import BaseMessage, HumanMessage
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
+
+load_dotenv()
 
 
-class AgentState(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
+# ==============================================================
+# Define State
+# ==============================================================
 
 
-def agent_node(state: AgentState) -> AgentState:
-    model = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-    response = model.invoke(state["messages"])
-    return {"messages": [response]}
+class State(TypedDict):
+    """A list of messages. This state is passed between nodes."""
+
+    messages: list[str]
 
 
-builder = StateGraph(AgentState)
-builder.add_node("agent", agent_node)
-builder.add_edge(START, "agent")
-builder.add_edge("agent", END)
+# ==============================================================
+# Define Nodes
+# ==============================================================
 
+
+def greeting_node(state: State) -> State:
+    """A node that overwrites the 'messages' list in the state with a greeting."""
+    print("--- Executing Node: greeter ---")
+    print(f"Received state: {state}")
+    new_message = "Hello from the greeting node!"
+    return {"messages": [new_message]}
+
+
+# ==============================================================
+# Build Graph
+# ==============================================================
+
+# Initiate the graph
+builder = StateGraph(State)
+
+# Add nodes and edges
+builder.add_node("greeter", greeting_node)
+builder.add_edge(START, "greeter")
+builder.add_edge("greeter", END)
+
+# Compile the graph (runnable object)
 graph = builder.compile()
 
-response = graph.invoke({"messages": [HumanMessage(content="What is the capital of France?")]})
-print(response["messages"][-1].content)
+
+# ==============================================================
+# Run Graph
+# ==============================================================
+print("=" * 60)
+print("Running the graph...")
+print("=" * 60)
+
+# Invoke the graph
+initial_state = State(messages=["Initial String"])
+response = graph.invoke(initial_state)
+
+print(f"\nResult: {response}")
+
+
+# ==============================================================
+# Visualize Graph
+# ==============================================================
+print("\n" + "=" * 60)
+print("Visualizing the graph:")
+print("=" * 60)
 
 # Display the graph
 display(Image(graph.get_graph().draw_mermaid_png()))
-# print(graph.get_graph().draw_mermaid())
+
+# Display the graph
+print(graph.get_graph().draw_mermaid())

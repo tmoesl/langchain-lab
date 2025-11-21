@@ -43,14 +43,23 @@ Use Cases:
 
 This pattern enables true human-in-the-loop workflows where operations can
 pause for minutes, hours, or days while waiting for human input.
+
+⚠️ CRITICAL: Interrupt Placement
+---------------------------------
+Place interrupts at the START of nodes.
+Code before interrupt() re-executes on resume!
 """
 
 from typing import Literal, TypedDict
 
+from dotenv import load_dotenv
 from IPython.display import Image, display
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
+
+load_dotenv()
 
 # ==============================================================
 # State Definition
@@ -58,7 +67,7 @@ from langgraph.types import Command, interrupt
 
 
 class State(TypedDict):
-    action_details: str
+    proposal_text: str
     status: Literal["pending", "approved", "rejected"]
 
 
@@ -70,13 +79,17 @@ class State(TypedDict):
 def review_node(state: State) -> Command[Literal["approve", "reject", "edit"]]:
     """Review action and route based on decision."""
 
+    print("🔄 Entered review_node (runs again after resume!)")
+
     decision = interrupt(
         {
             "question": "What would you like to do?",
-            "details": state["action_details"],
+            "details": state["proposal_text"],
             "options": ["approve", "reject", "edit"],
         }
     )
+
+    print(f"✅ Decision received: {decision}")
 
     # Use Command for dynamic routing (no static edges needed)
     if decision == "approve":
@@ -100,37 +113,43 @@ def reject_node(state: State) -> dict:
 def edit_node(state: State) -> dict:
     """Edit action details and return to review."""
 
+    print("🔄 Entered edit_node (runs again after resume!)")
+
     edited_text = interrupt(
         {
-            "question": "Edit the action details",
-            "details": state["action_details"],
+            "question": "Edit the proposal text",
+            "details": state["proposal_text"],
         }
     )
 
     print(f"📝 Updated to: {edited_text}")
 
-    return {"action_details": edited_text}
+    return {"proposal_text": edited_text}
 
 
 # ==============================================================
-# Graph Setup
+# Build Graph
 # ==============================================================
 
-builder = StateGraph(State)
-builder.add_node("review", review_node)
-builder.add_node("approve", approve_node)
-builder.add_node("reject", reject_node)
-builder.add_node("edit", edit_node)
+# Initialize graph
+graph = StateGraph(State)
+
+# Add nodes
+graph.add_node("review", review_node)
+graph.add_node("approve", approve_node)
+graph.add_node("reject", reject_node)
+graph.add_node("edit", edit_node)
 
 # Only add static edges to END (Command handles all other routing)
-builder.add_edge(START, "review")
-builder.add_edge("approve", END)
-builder.add_edge("reject", END)
-builder.add_edge("edit", "review")
+graph.add_edge(START, "review")
+graph.add_edge("approve", END)
+graph.add_edge("reject", END)
+graph.add_edge("edit", "review")
 
+# Compile graph
 checkpointer = MemorySaver()
-graph = builder.compile(checkpointer=checkpointer)
-display(Image(graph.get_graph().draw_mermaid_png()))
+graph = graph.compile(checkpointer=checkpointer)
+
 
 # ==============================================================
 # Interactive Testing
@@ -139,28 +158,36 @@ display(Image(graph.get_graph().draw_mermaid_png()))
 
 def handle_interrupts(initial_state: State):
     """Handle the complete interrupt workflow with consistent thread ID."""
-    config = {"configurable": {"thread_id": "1"}}  # Consistent thread ID
+    config: RunnableConfig = {"configurable": {"thread_id": "1"}}  # Consistent thread ID
 
-    # Start the workflow
+    # Invoke graph
     response = graph.invoke(initial_state, config=config)
 
     # Handle interrupts in sequence
     while "__interrupt__" in response:
+        # Show interrupt structure
+        print("\n" + "=" * 50)
+        print("📋 INTERRUPT STRUCTURE:")
+        print(f"   Type: {type(response['__interrupt__'])}")
+        print(f"   Count: {len(response['__interrupt__'])}")
+        print(f"   Interrupt ID: {response['__interrupt__'][0].id}")
+        print("=" * 50)
+
         interrupt_data = response["__interrupt__"][0].value
         print(f"\n⏸️ Interrupted: {interrupt_data['question']}")
-        print(f"📄 Details: {interrupt_data['details']}")
+        print(f"📄 Proposal Text: {interrupt_data['details']}")
 
         if "options" in interrupt_data:
             print(f"🔧 Options: {interrupt_data['options']}")
 
-        # Get user input
-        decision = input("Enter your decision: ")
+        # Get user input (use the question from interrupt as prompt)
+        user_input = input(f"\n{interrupt_data['question']}: ")
 
-        if decision.lower() == "exit":
+        if user_input.lower() == "exit":
             return None
 
-        # Resume with decision
-        response = graph.invoke(Command(resume=decision), config=config)
+        # Resume with user input
+        response = graph.invoke(Command(resume=user_input), config=config)
 
     return response
 
@@ -170,9 +197,18 @@ print("=" * 50)
 print("💡 Try: approve → done, reject → done, edit → loops back to review")
 
 # Test the workflow
-action_details = input("\n📝 Enter action details: ")
-initial_state = State(action_details=action_details, status="pending")
+proposal_text = input("\n📝 Enter proposal text: ")
+initial_state = State(proposal_text=proposal_text, status="pending")
 
 final_result = handle_interrupts(initial_state)
 
 print(f"\n{final_result}") if final_result else print("\nWorkflow exited by user")
+
+# ==============================================================
+# Visualize Graph
+# ==============================================================
+print("\n" + "=" * 60)
+print("Graph Visualization:")
+print("=" * 60)
+
+display(Image(graph.get_graph().draw_mermaid_png()))

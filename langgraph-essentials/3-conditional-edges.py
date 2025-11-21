@@ -1,201 +1,175 @@
 """
-Conditional Edges - Dynamic Routing
+LangGraph - Conditional Edges for Dynamic Routing
 
-Demonstrates two ways to implement conditional routing in LangGraph:
-1. add_conditional_edges(): Separate routing function
-2. Command with goto: Built-in node routing
+Demonstrates the two primary ways to implement conditional routing in LangGraph,
+allowing the graph to make decisions based on the current state.
 
 Key Concepts:
-- Conditional edges: Route based on state values (dashed lines in graph)
-- Static edges: Always taken (solid lines in graph)
-- Runtime decisions: Next node determined by current state
-- Command pattern: Update state + control flow in one return
+-------------
+- Conditional Edges: Enable dynamic, looping, and agentic behaviors by routing
+  control flow based on the current state.
 
-Both approaches achieve the same result - choose based on preference and complexity.
+- Method 1: Conditional Edges (`add_conditional_edges`)
+  - A separate router function inspects the state and returns the next node(s).
+  - When to Use: Best for separating routing logic from a node's main task.
+    Use this to route between nodes without updating the state in the router.
+
+- Method 2: Command (`update` and `goto`)
+  - A node returns a `Command` object to update the state and control routing directly.
+  - When to Use: Best for combining state updates and routing logic in a
+    single, self-contained function.
+  - NOTE: Return annotations declare node routing paths for rendering.
+
+Execution Flow:
+---------------
+Both approaches build the same graph: an entry node A decides which path
+to take, routing to either node B or C. Both paths then converge at a final node D.
+
+References:
+https://docs.langchain.com/oss/python/langgraph/graph-api#conditional-edges
+https://docs.langchain.com/oss/python/langgraph/graph-api#command
 """
 
 import operator
+import random
 from typing import Annotated, Literal, TypedDict
 
+from dotenv import load_dotenv
 from IPython.display import Image, display
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
+load_dotenv()
+
+
+# ==============================================================
+# Define State
+# ==============================================================
+
+
+class State(TypedDict):
+    """State with accumulating list of messages."""
+
+    messages: Annotated[list[str], operator.add]
+
+
+# ==============================================================
+# Define Shared Nodes for both approaches
+# ==============================================================
+
+
+def node_b(state: State) -> State:
+    print(f"--- Node B --- \n  - Received: {state['messages']}\n")
+    return {"messages": ["B"]}
+
+
+def node_c(state: State) -> State:
+    print(f"--- Node C --- \n  - Received: {state['messages']}\n")
+    return {"messages": ["C"]}
+
+
+def node_d(state: State) -> State:
+    print(f"--- Node D --- \n  - Received merged state: {state['messages']}\n")
+    return {"messages": ["D"]}
+
+
 # ==============================================================
 # Approach 1: Conditional Edges with Separate Router
 # ==============================================================
+print("=" * 60)
+print("Approach 1: Conditional Edges with Separate Router")
+print("=" * 60)
 
 
-class AgentState(TypedDict):
-    """State with accumulating list of visited nodes."""
-
-    nlist: Annotated[list[str], operator.add]
-
-
-def node_a_basic(state: AgentState) -> None:
-    """Entry node - no state updates."""
-    print("🚀 Starting at node a")
-
-
-def node_b_basic(state: AgentState) -> AgentState:
-    """Process B path."""
-    print("📍 Executing node b")
-    return AgentState(nlist=["b"])
+def node_a(state: State) -> State:  # type: ignore
+    """
+    Updates the state with a randomly chosen path. The actual routing
+    decision is handled by the separate `conditional_router` function,
+    demonstrating a separation of concerns.
+    """
+    choice = random.choice(["B", "C"])
+    print(f"--- Node A --- \n  - Input: {state['messages']}\n  - Path: '{choice}'\n")
+    return {"messages": [f"Path to {choice}"]}
 
 
-def node_c_basic(state: AgentState) -> AgentState:
-    """Process C path."""
-    print("📍 Executing node c")
-    return AgentState(nlist=["c"])
+def conditional_router(state: State) -> Literal["B", "C"]:
+    """Inspects the state to decide the next path."""
+    last_message = state["messages"][-1]
+    return "B" if "B" in last_message else "C"
 
 
-def route_decision(state: AgentState) -> Literal["b", "c", END]:
-    """Route based on last input in state."""
-    last_input = state["nlist"][-1].lower()
+# Initiate the graph
+graph = StateGraph(State)
 
-    route_map = {"b": "b", "c": "c", "q": END}
-    next_node = route_map.get(last_input, END)
-    print(f"🎯 Routing to node {next_node}")
-    return next_node
+# Add nodes
+graph.add_node("A", node_a)
+graph.add_node("B", node_b)
+graph.add_node("C", node_c)
+graph.add_node("D", node_d)
 
+# Add edges
+graph.add_edge(START, "A")
+graph.add_conditional_edges("A", conditional_router, {"B": "B", "C": "C"})
+graph.add_edge("B", "D")
+graph.add_edge("C", "D")
+graph.add_edge("D", END)
 
-def create_conditional_edge_graph():
-    """Create graph using add_conditional_edges approach."""
+# Compile the graph (runnable object)
+graph = graph.compile()
 
-    builder = StateGraph(AgentState)
+# Invoke the graph
+initial_state = State(messages=["Initial String"])
+response = graph.invoke(initial_state)
+print(f"Result: {response['messages']}\n")
 
-    # Add nodes
-    builder.add_node("a", node_a_basic)
-    builder.add_node("b", node_b_basic)
-    builder.add_node("c", node_c_basic)
-
-    # Add edges
-    builder.add_edge(START, "a")
-    builder.add_conditional_edges("a", route_decision)
-    builder.add_edge("b", END)
-    builder.add_edge("c", END)
-
-    return builder.compile()
+# Display the graph
+display(Image(graph.get_graph().draw_mermaid_png()))
 
 
 # ==============================================================
-# Approach 2: Command-Based Routing
+# Approach 2: Using a Command to Update State and Route
 # ==============================================================
+print("\n" + "=" * 60)
+print("Approach 2: Using a Command to Update State and Route")
+print("=" * 60)
 
 
-class AgentState(TypedDict):
-    """State with accumulating list of visited nodes."""
+def node_a(state: State) -> Command[Literal["B", "C"]]:
+    """
+    Combines state updates and routing logic in a single function.
+    This node randomly chooses a path, updates the state with its choice,
+    and returns a Command to route to that path all in one step.
+    NOTE: Return annotations declare node routing paths for rendering.
+    """
+    choice = random.choice(["B", "C"])
+    print(f"--- Node A --- \n  - Input: {state['messages']}\n  - Path: '{choice}'\n")
 
-    nlist: Annotated[list[str], operator.add]
-
-
-def node_a_command(state: AgentState) -> Command[Literal["b", "c", END]]:
-    """Entry node with built-in routing logic."""
-    print("🚀 Starting at node A (Command approach)")
-
-    last_input = state["nlist"][-1].lower()
-
-    if last_input == "b":
-        next_node = "b"
-    elif last_input == "c":
-        next_node = "c"
-    elif last_input == "q":
-        next_node = END
-    else:
-        next_node = END
-
-    print(f"🎯 Routing to node{next_node}")
-    return Command(goto=[next_node])
+    state_update = {"messages": [f"Routing to {choice} node"]}
+    return Command(update=state_update, goto=choice)  # type: ignore
 
 
-def node_b_command(state: AgentState) -> AgentState:
-    """Process B path."""
-    print("📍 Executing node b")
-    return AgentState(nlist=["b"])
+# Initiate the graph
+graph = StateGraph(State)
 
+# Add nodes
+graph.add_node("A", node_a)
+graph.add_node("B", node_b)
+graph.add_node("C", node_c)
+graph.add_node("D", node_d)
 
-def node_c_command(state: AgentState) -> AgentState:
-    """Process C path."""
-    print("📍 Executing node c")
-    return AgentState(nlist=["c"])
+# Add edges
+graph.add_edge(START, "A")
+graph.add_edge("B", "D")
+graph.add_edge("C", "D")
+graph.add_edge("D", END)
 
+# Compile the graph (runnable object)
+graph = graph.compile()
 
-def create_command_graph():
-    """Create graph using Command approach."""
+# Invoke the graph
+initial_state = State(messages=["Initial String"])
+response = graph.invoke(initial_state)
+print(f"Result: {response['messages']}\n")
 
-    builder = StateGraph(AgentState)
-
-    # Add nodes
-    builder.add_node("a", node_a_command)
-    builder.add_node("b", node_b_command)
-    builder.add_node("c", node_c_command)
-
-    # Add edges (no conditional edges needed - handled by Command)
-    builder.add_edge(START, "a")
-    builder.add_edge("b", END)
-    builder.add_edge("c", END)
-
-    return builder.compile()
-
-
-# ==============================================================
-# Test Both Approaches
-# ==============================================================
-
-
-def test_conditional_edges():
-    """Test the conditional edges approach."""
-
-    print(f"\n{'=' * 50}")
-    print("Testing: Conditional Edges Approach")
-    print(f"{'=' * 50}")
-
-    graph = create_conditional_edge_graph()
-
-    # Visualize the graph
-    display(Image(graph.get_graph().draw_mermaid_png()))
-
-    # Test cases
-    test_cases = ["b", "c", "q", "invalid"]
-
-    for test_input in test_cases:
-        print(f"\nInput: '{test_input}'")
-        initial_state = AgentState(nlist=[test_input])
-
-        try:
-            response = graph.invoke(initial_state)
-            print(f"Result: {response['nlist']}")
-        except Exception as e:
-            print(f"Error: {e}")
-
-
-def test_command_routing():
-    """Test the Command-based routing approach."""
-
-    print(f"\n{'=' * 50}")
-    print("Testing: Command Routing Approach")
-    print(f"{'=' * 50}")
-
-    graph = create_command_graph()
-
-    # Visualize the graph
-    display(Image(graph.get_graph().draw_mermaid_png()))
-
-    # Test cases
-    test_cases = ["b", "c", "q", "invalid"]
-
-    for test_input in test_cases:
-        print(f"\nInput: '{test_input}'")
-        initial_state = AgentState(nlist=[test_input])
-
-        try:
-            response = graph.invoke(initial_state)
-            print(f"Result: {response['nlist']}")
-        except Exception as e:
-            print(f"Error: {e}")
-
-
-if __name__ == "__main__":
-    # Test both approaches separately
-    test_conditional_edges()
-    test_command_routing()
+# Display the graph
+display(Image(graph.get_graph().draw_mermaid_png()))

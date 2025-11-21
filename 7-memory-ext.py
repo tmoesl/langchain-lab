@@ -92,7 +92,7 @@ def test_memory_persistence():
     """Test memory persistence across multiple invocations."""
     agent = create_memory_graph()
 
-    # Display graph structure
+    # Display the graph
     if hasattr(sys, "ps1"):
         display(Image(agent.get_graph().draw_mermaid_png()))
 
